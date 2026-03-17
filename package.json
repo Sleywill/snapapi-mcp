@@ -1,0 +1,52 @@
+{
+  "name": "snapapi-mcp",
+  "version": "3.1.0",
+  "description": "MCP server for SnapAPI - screenshot, scrape, extract, PDF, video, and analyze web content in AI tools",
+  "main": "dist/index.js",
+  "bin": {
+    "snapapi-mcp": "dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "snapapi",
+    "screenshot",
+    "scraping",
+    "web-scraping",
+    "extract",
+    "claude",
+    "cursor",
+    "windsurf",
+    "cline",
+    "ai-tools"
+  ],
+  "author": "SnapAPI <support@snapapi.pics>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sleywill/snapapi-mcp"
+  },
+  "homepage": "https://snapapi.pics",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
