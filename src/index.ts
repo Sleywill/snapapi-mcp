@@ -13,11 +13,21 @@ import {
 // Configuration
 // ---------------------------------------------------------------------------
 
-const VERSION = "3.1.0";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(
+  readFileSync(join(__dirname, "..", "package.json"), "utf-8")
+) as { version: string };
+
+const VERSION = pkg.version;
 const API_KEY = process.env.SNAPAPI_API_KEY;
 const API_BASE = (
   process.env.SNAPAPI_BASE_URL || "https://api.snapapi.pics"
 ).replace(/\/+$/, "");
+const REQUEST_TIMEOUT_MS = 60_000;
 
 if (!API_KEY) {
   process.stderr.write(
@@ -45,16 +55,22 @@ async function callSnapAPI(
   const url = `${API_BASE}/v1/${endpoint}`;
   const headers: Record<string, string> = {
     Authorization: `Bearer ${API_KEY}`,
-    "Content-Type": "application/json",
     "User-Agent": `snapapi-mcp/${VERSION}`,
   };
+
+  if (method === "POST") {
+    headers["Content-Type"] = "application/json";
+  }
 
   const init: RequestInit = { method, headers };
   if (body && method === "POST") {
     init.body = JSON.stringify(body);
   }
 
-  const response = await fetch(url, init);
+  const response = await fetch(url, {
+    ...init,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
 
   if (!response.ok) {
     // Surface rate-limit information when available
@@ -600,6 +616,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "screenshot": {
         const params: Record<string, unknown> = { ...args };
 
+        if (!params.url && !params.html && !params.markdown) {
+          throw new McpError(
+            ErrorCode.InvalidRequest,
+            "At least one of url, html, or markdown must be provided."
+          );
+        }
+
         // Force base64 response so we can return it as an MCP image block
         params.responseType = "base64";
 
@@ -759,6 +782,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ---------------------------------------------------------------
       case "pdf": {
         const params: Record<string, unknown> = { ...args };
+
+        if (!params.url && !params.html) {
+          throw new McpError(
+            ErrorCode.InvalidRequest,
+            "At least one of url or html must be provided."
+          );
+        }
+
         params.format = "pdf";
         params.responseType = "base64";
 
@@ -894,90 +925,78 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // get_usage
       // ---------------------------------------------------------------
       case "get_usage": {
-        // Try the dedicated quota endpoint first (supports API key auth),
-        // then fall back to the dashboard overview endpoint.
+        // Try the dedicated quota endpoint first, fall back to dashboard overview
         let usageText: string | null = null;
 
-        // Attempt 1: /v1/quota (API-key-friendly lightweight endpoint)
+        // Attempt 1: /v1/quota
         try {
-          const quotaResp = await fetch(`${API_BASE}/v1/quota`, {
-            headers: {
-              Authorization: `Bearer ${API_KEY}`,
-              "User-Agent": `snapapi-mcp/${VERSION}`,
-            },
-          });
-          if (quotaResp.ok) {
-            const q = (await quotaResp.json()) as {
-              plan?: string;
-              used?: number;
-              limit?: number;
-              remaining?: number;
-              percentUsed?: number;
-              resetsAt?: string;
-            };
-            usageText =
-              `SnapAPI Quota\n` +
-              `=============\n` +
-              `Plan:      ${q.plan || "unknown"}\n` +
-              `Used:      ${q.used ?? "?"} / ${q.limit ?? "?"} requests\n` +
-              `Remaining: ${q.remaining ?? "?"} requests\n` +
-              `Usage:     ${q.percentUsed ?? "?"}%\n` +
-              `Resets at: ${q.resetsAt || "unknown"}`;
-          }
-        } catch {
-          // fall through
+          const quotaResp = await callSnapAPI("quota", "GET");
+          const q = (await quotaResp.json()) as {
+            plan?: string;
+            used?: number;
+            limit?: number;
+            remaining?: number;
+            percentUsed?: number;
+            resetsAt?: string;
+          };
+          usageText =
+            `SnapAPI Quota\n` +
+            `=============\n` +
+            `Plan:      ${q.plan || "unknown"}\n` +
+            `Used:      ${q.used ?? "?"} / ${q.limit ?? "?"} requests\n` +
+            `Remaining: ${q.remaining ?? "?"} requests\n` +
+            `Usage:     ${q.percentUsed ?? "?"}%\n` +
+            `Resets at: ${q.resetsAt || "unknown"}`;
+        } catch (err) {
+          if (err instanceof McpError) throw err;
+          process.stderr.write(
+            `get_usage: /v1/quota failed: ${err instanceof Error ? err.message : err}\n`
+          );
         }
 
-        // Attempt 2: /v1/dashboard/overview (may require JWT but try anyway)
+        // Attempt 2: /v1/dashboard/overview
         if (!usageText) {
           try {
-            const overviewResp = await fetch(
-              `${API_BASE}/v1/dashboard/overview`,
-              {
-                headers: {
-                  Authorization: `Bearer ${API_KEY}`,
-                  "User-Agent": `snapapi-mcp/${VERSION}`,
-                },
-              }
-            );
-            if (overviewResp.ok) {
-              const d = (await overviewResp.json()) as {
-                user?: { plan?: string; email?: string };
-                quota?: {
-                  used?: number;
-                  limit?: number;
-                  remaining?: number;
-                  percentUsed?: number;
-                  resetsAt?: string;
-                };
-                stats?: {
-                  totalRequests?: number;
-                  successful?: number;
-                  failed?: number;
-                  avgResponseTime?: number;
-                };
+            const overviewResp = await callSnapAPI("dashboard/overview", "GET");
+            const d = (await overviewResp.json()) as {
+              user?: { plan?: string; email?: string };
+              quota?: {
+                used?: number;
+                limit?: number;
+                remaining?: number;
+                percentUsed?: number;
+                resetsAt?: string;
               };
-              const q = d.quota || {};
-              const s = d.stats || {};
-              const u = d.user || {};
-              usageText =
-                `SnapAPI Account Overview\n` +
-                `========================\n` +
-                `Plan:  ${u.plan || "unknown"}\n` +
-                `Email: ${u.email || "unknown"}\n\n` +
-                `Quota This Month\n` +
-                `  Used:      ${q.used ?? "?"} / ${q.limit ?? "?"} requests\n` +
-                `  Remaining: ${q.remaining ?? "?"} requests\n` +
-                `  Usage:     ${q.percentUsed ?? "?"}%\n` +
-                `  Resets at: ${q.resetsAt || "unknown"}\n\n` +
-                `Monthly Stats\n` +
-                `  Total requests:    ${s.totalRequests ?? 0}\n` +
-                `  Successful:        ${s.successful ?? 0}\n` +
-                `  Failed:            ${s.failed ?? 0}\n` +
-                `  Avg response time: ${s.avgResponseTime ?? 0}ms`;
-            }
-          } catch {
-            // fall through
+              stats?: {
+                totalRequests?: number;
+                successful?: number;
+                failed?: number;
+                avgResponseTime?: number;
+              };
+            };
+            const q = d.quota || {};
+            const s = d.stats || {};
+            const u = d.user || {};
+            usageText =
+              `SnapAPI Account Overview\n` +
+              `========================\n` +
+              `Plan:  ${u.plan || "unknown"}\n` +
+              `Email: ${u.email || "unknown"}\n\n` +
+              `Quota This Month\n` +
+              `  Used:      ${q.used ?? "?"} / ${q.limit ?? "?"} requests\n` +
+              `  Remaining: ${q.remaining ?? "?"} requests\n` +
+              `  Usage:     ${q.percentUsed ?? "?"}%\n` +
+              `  Resets at: ${q.resetsAt || "unknown"}\n\n` +
+              `Monthly Stats\n` +
+              `  Total requests:    ${s.totalRequests ?? 0}\n` +
+              `  Successful:        ${s.successful ?? 0}\n` +
+              `  Failed:            ${s.failed ?? 0}\n` +
+              `  Avg response time: ${s.avgResponseTime ?? 0}ms`;
+          } catch (err) {
+            if (err instanceof McpError) throw err;
+            process.stderr.write(
+              `get_usage: /v1/dashboard/overview failed: ${err instanceof Error ? err.message : err}\n`
+            );
           }
         }
 
@@ -1018,7 +1037,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           total: number;
         };
 
-        let output = `Available Device Presets (${data.total} total)\n`;
+        if (!data.devices || typeof data.devices !== "object") {
+          return {
+            content: [
+              { type: "text" as const, text: "No device data returned from the API." },
+            ],
+            isError: true,
+          };
+        }
+
+        let output = `Available Device Presets (${data.total ?? 0} total)\n`;
         output += "=".repeat(45) + "\n\n";
 
         for (const [category, devices] of Object.entries(data.devices)) {
@@ -1043,6 +1071,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   } catch (error: unknown) {
     if (error instanceof McpError) throw error;
+
+    // Provide a friendlier message for request timeouts
+    if (
+      error instanceof DOMException &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    ) {
+      throw new McpError(
+        ErrorCode.InternalError,
+        `Tool "${name}" timed out after ${REQUEST_TIMEOUT_MS / 1000}s. ` +
+          "The target page may be slow to load — try increasing the delay or using a simpler URL."
+      );
+    }
 
     const message =
       error instanceof Error ? error.message : String(error);

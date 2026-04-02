@@ -36,7 +36,8 @@ echo ""
 echo "This will configure SnapAPI for $APP_NAME."
 echo ""
 echo "Enter your SnapAPI API key (from https://app.snapapi.pics/dashboard):"
-read -r API_KEY
+read -rs API_KEY
+echo ""
 
 if [ -z "$API_KEY" ]; then
   echo "Error: API key is required."
@@ -59,7 +60,7 @@ with open(config_file) as f:
 
 config.setdefault("mcpServers", {})["snapapi"] = {
     "command": "npx",
-    "args": ["snapapi-mcp"],
+    "args": ["-y", "snapapi-mcp"],
     "env": {"SNAPAPI_API_KEY": api_key}
 }
 
@@ -81,7 +82,7 @@ config = {
     "mcpServers": {
         "snapapi": {
             "command": "npx",
-            "args": ["snapapi-mcp"],
+            "args": ["-y", "snapapi-mcp"],
             "env": {"SNAPAPI_API_KEY": api_key}
         }
     }
